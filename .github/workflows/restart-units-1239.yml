@@ -1,0 +1,62 @@
+name: Dymos 1239 record-restart contract
+'on':
+  push:
+    branches: [probe/restart-units-1239-20260925]
+permissions:
+  contents: read
+concurrency:
+  group: restart-units-1239-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  comparison:
+    if: github.repository == 'kvnloo/dymos'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      OPENMDAO_REPORTS: '0'
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify source and diagnostic syntax
+        run: |
+          mkdir -p diagnostic-results
+          git rev-parse HEAD > diagnostic-results/commit.txt
+          git diff --exit-code 5bfbe394d251b5b7ccf510109648d576ecf4d390 -- dymos
+          python -m py_compile diagnostics/restart_units.py
+      - name: Install pinned execution dependencies and source package
+        run: |
+          python -m pip install 'numpy==2.2.6' 'scipy==1.15.3' 'openmdao==3.45.0'
+          python -m pip install -e .
+          python -m pip freeze > diagnostic-results/packages.txt
+      - name: Verify expected baseline failures and passing controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python diagnostics/restart_units.py baseline 2>&1 | tee diagnostic-results/baseline.log
+      - name: Apply runner-local state-only candidate
+        run: |
+          python diagnostics/restart_units.py patch
+          python -m py_compile dymos/phase/phase.py
+      - name: Require candidate to satisfy all restart cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python diagnostics/restart_units.py candidate 2>&1 | tee diagnostic-results/candidate.log
+      - name: Interpret outcome
+        if: always()
+        run: |
+          echo 'Green means expected baseline defects and passing candidate contracts, NOT a passing baseline or full suite.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Eight real record/restart cases. No optimization, ODE integration, spacecraft simulation, GPU or MPI.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dymos-1239-restart-evidence
+          path: diagnostic-results/
+          if-no-files-found: error
